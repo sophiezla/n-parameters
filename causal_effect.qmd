@@ -11,6 +11,11 @@ execute:
 #| message: false
 library(tidyverse)
 library(primer.data)
+library(brms)
+library(tidybayes)
+library(gtsummary)
+library(broom.mixed)
+library(dplyr)
 ```
 
 ```{r}
@@ -41,3 +46,87 @@ y = "Voted in 2006 Primary Election",
 caption = "Random sample of 5% of the data from Gerber, Green, and Larimer (2008)")
 ```
 
+```{r}
+#| label: model
+#| cache: true
+fit_postcard_vote <- brm(formula = voted ~ age_z + sex + treatment + voter_class + treatment*voter_class, 
+    data = ch10_data, 
+   family = gaussian(),
+   refresh = 0,
+   silent = 2, 
+   seed = 19 )
+```
+
+```{r}
+#| label: plot
+sex <- "Male"
+age_z <- 0
+treatment <- c("No Postcard",
+               "Civic Duty",
+               "Hawthorne",
+               "Self",
+               "Neighbors")
+voter_class <- c("Always Vote",
+                 "Sometimes Vote",
+                 "Rarely Vote")
+
+ndata <- expand_grid(sex, age_z, treatment, voter_class) |> 
+  mutate(names = paste(treatment, voter_class, sep = "_"))
+
+draws <- fit_postcard_vote |> 
+  add_epred_draws(newdata = ndata) |> 
+  ungroup() |> 
+  select(names, .epred) |>  
+  pivot_wider(names_from = names, 
+              values_from = .epred, 
+              values_fn = list) |>
+  unnest(cols = everything()) |> 
+  janitor::clean_names()
+
+plot_data <- draws |> 
+  mutate(`Always Civic-Duty`    = civic_duty_always_vote     - no_postcard_always_vote,
+         `Always Hawthorne`     = hawthorne_always_vote      - no_postcard_always_vote,
+         `Always Self`          = self_always_vote           - no_postcard_always_vote,
+         `Always Neighbors`     = neighbors_always_vote      - no_postcard_always_vote,
+         `Sometimes Civic-Duty` = civic_duty_sometimes_vote  - no_postcard_sometimes_vote,
+         `Sometimes Hawthorne`  = hawthorne_sometimes_vote   - no_postcard_sometimes_vote,
+         `Sometimes Self`       = self_sometimes_vote        - no_postcard_sometimes_vote,
+         `Sometimes Neighbors`  = neighbors_sometimes_vote   - no_postcard_sometimes_vote,
+         `Rarely Civic-Duty`    = civic_duty_rarely_vote     - no_postcard_rarely_vote,
+         `Rarely Hawthorne`     = hawthorne_rarely_vote      - no_postcard_rarely_vote,
+         `Rarely Self`          = self_rarely_vote           - no_postcard_rarely_vote,
+         `Rarely Neighbors`     = neighbors_rarely_vote      - no_postcard_rarely_vote) |> 
+  pivot_longer(names_to = c("Voter Class", "Group"),
+               names_sep = " ",
+               values_to = "values",
+               cols = `Always Civic-Duty`:`Rarely Neighbors`) |> 
+  mutate(`Voter Class` = fct_relevel(factor(`Voter Class`),
+                                     c("Rarely",
+                                       "Sometimes",
+                                       "Always")))
+
+ggplot(plot_data, aes(x = values, y = fct_reorder(Group, values))) +
+    stat_slab(aes(fill = `Voter Class`),
+              position = 'dodge') +
+    scale_x_continuous(labels = scales::percent_format(accuracy = 1),
+                       breaks = seq(-0.05, 0.11, 0.01)) +
+    labs(title = "Treatment Effects on the Probability of Voting",
+         subtitle = "Postcards work less well on those who rarely vote",
+         y = "Postcard Type",
+         x = "Average Treatment Effect",
+         caption = "Source: Gerber, Green, and Larimer (2008)") +
+    theme_classic() +
+    theme(legend.position = "bottom")
+
+```
+
+
+We have data from a study in 2006 in Michigan on voter turnout for 180,000 households which we want to use to find the causal effect of postcards on voting in the 2026 Texas gubernatorial election. After addressing the assumptions of validity, stability, representativeness and unconfoundedness, arises the concern that the data from Michigan is too different to be applied to Texas. We modeled it with a Bayesian linear regression model on the dependent variable 'voted'. From this it seems that people who voted before are more likely to vote. The neighbors postcard has the greatest effect across voters, however this is only a prediction as we can never know for sure.
+
+$$y_{i} = \beta_{0} + \beta_{1} age\_z + \beta_{2}male_i + \beta_{3}civic\_duty_i + \\ \beta_{4}hawthorne_i + \beta_{5}self_i + \beta_{6}neighbors_i + \\ \beta_{7}Sometimes\ vote_i + \beta_{8}Always\ vote_i + \\ \beta_{9}civic\_duty_i Sometimes\ vote_i + \beta_{10}hawthorne_i Sometimes\ vote_i + \\ \beta_{11}self_i Sometimes\ vote_i + \beta_{11}neighbors_i Sometimes\ vote_i + \\ \beta_{12}civic\_duty_i Always\ vote_i + \beta_{13}hawthorne_i Always\ vote_i + \\ \beta_{14}self_i Always\ vote_i + \beta_{15}neighbors_i Always\ vote_i + \epsilon_{i}$$
+
+```{r}
+#| label: table
+fit_postcard_vote |>
+tbl_regression(intercept = TRUE, estimate_fun = function(x) style_sigfig(x, digits = 3))
+```
